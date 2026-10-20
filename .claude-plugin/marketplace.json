@@ -1,0 +1,12 @@
+{
+  "name": "context-engine-ai",
+  "description": "Context Engine plugins for Claude Code",
+  "owner": { "name": "Context Engine", "url": "https://github.com/Context-Engine-AI" },
+  "plugins": [
+    {
+      "name": "context-engine",
+      "source": "./context-engine",
+      "description": "Session facts and grep-to-Context-Engine redirects for workspaces indexed by Context Engine"
+    }
+  ]
+}
