@@ -22,7 +22,7 @@ The hooks act only when both of these are true. Otherwise they print nothing and
 - The workspace maps to a Context Engine collection. The plugin reads the mappings `ctxce` keeps under
   `~/.ctxce/workspaces/`, a `ctx_config.json` in the repo, or `CTXCE_COLLECTION`.
 - A Context Engine MCP server is configured for the session: `~/.claude.json` (user or local scope),
-  the repo's `.mcp.json`, or `--mcp-config` (with `--strict-mcp-config` respected).
+  the repo's `.mcp.json` once approved, or `--mcp-config` (with `--strict-mcp-config` respected).
 
 **SessionStart and SubagentStart.** Adds a short factual note (under 600 characters): the collection,
 and when `repo_search`, `symbol_graph` or grep fits. SubagentStart matters because Explore and Plan
@@ -40,16 +40,21 @@ mcp__context-engine__repo_search {"query":"parseConfig","collection":"admin_demo
 that uses it as verified source.
 ```
 
-- At most 2 denies per session, and none once the session has called a Context Engine tool (a
-  PostToolUse hook records that). A search that was already denied runs if Claude tries it again.
-- Never denied: a search scoped to named files; counts (`-c`, `| wc`); greps that filter piped input;
-  `-v`, `-L`, `-q`; patterns that are real regexes, under 4 characters, numbers, URLs, paths, file names,
-  TODO/FIXME markers, keywords only, or `-F` literal phrases; non-code file types (`--include=*.md`,
-  `-t json`); paths outside the repo or in `node_modules`, `vendor`, `target`, `dist` and similar;
-  `git grep` against a revision or next to `git log`/`show`/`diff`; anything with `$(...)` or a heredoc.
+- At most 2 denies per session, and none once the session has called a Context Engine tool or edited
+  a file (a PostToolUse hook records that). A search that was already denied runs if Claude tries it again.
+- Never denied:
+  - searches scoped to named files, or to paths outside the repo or in `node_modules`, `vendor`,
+    `target`, `dist` and similar;
+  - counts (`-c`, `| wc`), greps that filter piped input, and greps whose matches feed `xargs`, `sed`,
+    `while read` and similar (renames, batch edits);
+  - `-v`, `-L`, `-q`, `--no-ignore`, `--hidden`, and non-code file types (`--include=*.md`, `-t json`);
+  - patterns that are real regexes, under 4 characters, numbers, URLs, paths, file names, TODO/FIXME
+    markers, keywords only, or `-F` literal phrases;
+  - `git grep` against a revision or next to `git log`/`show`/`diff`, and anything with `$(...)` or a heredoc;
+  - a Glob, unless it guesses at a multi-part name such as `**/*AuthService*`.
 - Any error, timeout or unreadable input means the tool call goes ahead unchanged.
 
-State is one small JSON file per session in `$TMPDIR/ctxce-claude-hooks/`.
+State is a few small marker files per session in `$TMPDIR/ctxce-claude-hooks-<uid>/`.
 
 ## Switches
 

@@ -8,7 +8,11 @@ import path from "node:path";
 import { SEARCH_HINT, classifyBash, classifyGlobTool, classifyGrepTool } from "./classify.mjs";
 
 export const MAX_DENIES = 2;
-const CE_MARK = /context-engine|ctxce|ctx-mcp-proxy/i;
+// What a ctxce-launched CE server runs: the proxy, the bridge package or binary, or the SaaS URL.
+const CE_COMMAND = /ctx-mcp-proxy|context-engine-mcp-bridge|context-engine\.ai|(^|[\s/\\])ctxce(\.js|\.cmd)?(\s|$)/i;
+// Collection names are inserted into text Claude reads; anything else (e.g. from a cloned repo's ctx_config.json) is ignored.
+const COLLECTION = /^[A-Za-z0-9_.-]{1,128}$/;
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 function readJson(file) {
   try {
@@ -56,7 +60,7 @@ export function workspaceDirName(workspacePath) {
 function collectionIn(configFile) {
   const cfg = readJson(configFile);
   const c = cfg && typeof cfg.default_collection === "string" ? cfg.default_collection.trim() : "";
-  return c || null;
+  return COLLECTION.test(c) ? c : null;
 }
 
 // Resolution order of the ctxce proxy (forward hash lookup, then meta.json reverse lookup), then the
@@ -92,7 +96,7 @@ export function resolveWorkspace(cwd, home, env) {
     dir = path.dirname(dir);
   }
   const envCollection = String(env.CTXCE_COLLECTION || "").trim();
-  return envCollection ? { root: gitRoot || cwd, collection: envCollection } : null;
+  return COLLECTION.test(envCollection) ? { root: gitRoot || cwd, collection: envCollection } : null;
 }
 
 // Command line of the Claude Code process that ran this hook (to see --mcp-config / --strict-mcp-config).
@@ -102,7 +106,7 @@ export function readParentArgs() {
     let pid = process.ppid;
     for (let i = 0; i < 3 && pid > 1; i += 1) {
       const out = execFileSync("ps", ["-ww", "-o", "ppid=,args=", "-p", String(pid)], {
-        encoding: "utf8", timeout: 1000, stdio: ["ignore", "pipe", "ignore"],
+        encoding: "utf8", timeout: 500, stdio: ["ignore", "pipe", "ignore"],
       }).trim();
       const m = /^(\d+)\s+([\s\S]*)$/.exec(out);
       if (!m) return "";
@@ -135,11 +139,23 @@ function serverEntries(obj) {
 function explicitCollection(cfg) {
   const args = cfg && Array.isArray(cfg.args) ? cfg.args : [];
   const i = args.indexOf("--collection");
-  return i >= 0 && typeof args[i + 1] === "string" ? args[i + 1] : null;
+  return i >= 0 && COLLECTION.test(String(args[i + 1])) ? args[i + 1] : null;
 }
 
-// The CE indexer server visible to this session, or null. Honors --strict-mcp-config.
-// shortcut: ignores project-scope approval and plugin-bundled servers (mcp__plugin_*); none ship CE today.
+function looksLikeCe(name, cfg) {
+  if (/memory/i.test(name)) return false;
+  const parts = cfg && typeof cfg === "object" ? [cfg.command, cfg.url, ...(Array.isArray(cfg.args) ? cfg.args : [])] : [];
+  const text = parts.filter((x) => typeof x === "string").join(" ");
+  return CE_COMMAND.test(text) && !/memory\/mcp/i.test(text);
+}
+
+function listOf(obj, key) {
+  return obj && Array.isArray(obj[key]) ? obj[key].filter((x) => typeof x === "string") : [];
+}
+
+// The CE indexer server visible to this session, or null. Honors --strict-mcp-config, disabled servers,
+// and project (.mcp.json) server approval.
+// shortcut: ignores managed settings and plugin-bundled servers (mcp__plugin_*); none ship CE today.
 export function findCeServer(root, cwd, home, env, parentArgs) {
   const args = parentArgs ?? readParentArgs();
   const strict = /(^|\s)--strict-mcp-config(\s|$)/.test(args);
@@ -151,45 +167,75 @@ export function findCeServer(root, cwd, home, env, parentArgs) {
   }
   const disabled = new Set();
   if (!strict) {
-    const claudeJson = readJson(path.join(env.CLAUDE_CONFIG_DIR || home, ".claude.json")) || {};
+    const configDir = env.CLAUDE_CONFIG_DIR || null;
+    const claudeJson = readJson(path.join(configDir || home, ".claude.json")) || {};
     found.push(...serverEntries(claudeJson.mcpServers));
+    const approvals = [
+      readJson(path.join(configDir || path.join(home, ".claude"), "settings.json")),
+      readJson(path.join(root, ".claude", "settings.json")),
+      readJson(path.join(root, ".claude", "settings.local.json")),
+    ];
     for (const p of new Set([root, cwd])) {
       const proj = claudeJson.projects && claudeJson.projects[p];
       if (!proj) continue;
       found.push(...serverEntries(proj.mcpServers));
-      for (const n of Array.isArray(proj.disabledMcpServers) ? proj.disabledMcpServers : []) disabled.add(n);
+      for (const n of listOf(proj, "disabledMcpServers")) disabled.add(n);
+      approvals.push(proj);
     }
+    const all = approvals.some((a) => a && a.enableAllProjectMcpServers === true);
+    const enabled = new Set(approvals.flatMap((a) => listOf(a, "enabledMcpjsonServers")));
+    const rejected = new Set(approvals.flatMap((a) => listOf(a, "disabledMcpjsonServers")));
     const projectFile = readJson(path.join(root, ".mcp.json"));
-    found.push(...serverEntries(projectFile && projectFile.mcpServers));
+    found.push(...serverEntries(projectFile && projectFile.mcpServers).filter(([n]) => (all || enabled.has(n)) && !rejected.has(n)));
   }
   const servers = found.filter(([n]) => !disabled.has(n));
-  const hit = servers.find(([n]) => n === "context-engine")
-    || servers.find(([n, c]) => !/memory/i.test(n) && !/memory/i.test(JSON.stringify(c)) && (CE_MARK.test(n) || CE_MARK.test(JSON.stringify(c))));
+  const hit = servers.find(([n]) => n === "context-engine") || servers.find(([n, c]) => looksLikeCe(n, c));
   if (!hit) return null;
   return { name: hit[0], prefix: `mcp__${hit[0].replace(/[^A-Za-z0-9_-]/g, "_")}__`, collection: explicitCollection(hit[1]) };
 }
 
 // ---------------------------------------------------------------- throttle state
 
-export function statePath(sessionId, dir) {
-  const id = String(sessionId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128);
-  return id ? path.join(dir || path.join(os.tmpdir(), "ctxce-claude-hooks"), `${id}.json`) : null;
+// Per session: <id>.done once CE was called or a file edited, and <id>.deny<N> per deny (holding its key).
+// Every file is created with O_EXCL, so parallel hook processes cannot exceed MAX_DENIES or follow a
+// planted symlink, and the directory must belong to this user.
+export function sessionKey(sessionId) {
+  return String(sessionId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128) || null;
 }
 
-export function readState(file) {
-  const s = readJson(file);
-  return {
-    denies: s && Number.isInteger(s.denies) ? s.denies : 0,
-    denied: s && Array.isArray(s.denied) ? s.denied.filter((k) => typeof k === "string") : [],
-    ce: Boolean(s && s.ce),
-  };
+export function stateDir(dir) {
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  const d = dir || path.join(os.tmpdir(), `ctxce-claude-hooks-${uid ?? "user"}`);
+  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  const st = fs.lstatSync(d);
+  if (!st.isDirectory() || (uid !== null && st.uid !== uid)) throw new Error(`${d} is not this user's directory`);
+  return d;
 }
 
-function writeState(file, state) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
-  fs.renameSync(tmp, file);
+function create(file, content) {
+  try {
+    fs.writeFileSync(file, content, { flag: "wx", mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readState(dir, id) {
+  const denied = [];
+  for (let i = 0; i < MAX_DENIES; i += 1) {
+    try {
+      denied.push(fs.readFileSync(path.join(dir, `${id}.deny${i}`), "utf8"));
+    } catch {
+      // free slot
+    }
+  }
+  return { denied, done: fs.existsSync(path.join(dir, `${id}.done`)) };
+}
+
+function claimDeny(dir, id, key) {
+  for (let i = 0; i < MAX_DENIES; i += 1) if (create(path.join(dir, `${id}.deny${i}`), key)) return true;
+  return false;
 }
 
 // ---------------------------------------------------------------- text Claude sees
@@ -242,21 +288,22 @@ export function handle(input, opts = {}) {
   }
   if (env.CTXCE_REDIRECT === "0") return null;
   const tool = input.tool_name;
-  // After the session has used CE, its greps are deliberate (verification, exhaustive lists): stop denying.
+  const id = sessionKey(input.session_id);
+  // Once the session has called CE, its greps are deliberate (verification, exhaustive lists); once it
+  // edits files, greps check the edit and the index may lag behind it. Either way: stop denying.
   // shortcut: matches the standard "context-engine" server name only, like the hooks.json matcher.
-  if (event === "PostToolUse" && typeof tool === "string" && tool.startsWith("mcp__context-engine__")) {
-    const file = statePath(input.session_id, opts.stateDir);
-    const state = file && readState(file);
-    if (state && !state.ce) writeState(file, { ...state, ce: true });
+  if (event === "PostToolUse") {
+    const ends = typeof tool === "string" && (tool.startsWith("mcp__context-engine__") || EDIT_TOOLS.has(tool));
+    if (id && ends) create(path.join(stateDir(opts.stateDir), `${id}.done`), "1");
     return null;
   }
   if (event !== "PreToolUse") return null;
   const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
   if (tool === "Bash" ? !SEARCH_HINT.test(String(toolInput.command || "")) : tool !== "Grep" && tool !== "Glob") return null;
-  const file = statePath(input.session_id, opts.stateDir);
-  if (!file) return null;
-  const state = readState(file);
-  if (state.ce || state.denies >= MAX_DENIES) return null;
+  if (!id) return null;
+  const dir = stateDir(opts.stateDir);
+  const state = readState(dir, id);
+  if (state.done || state.denied.length >= MAX_DENIES) return null;
   const w = workspace();
   if (!w) return null;
   const ctx = { cwd, root: w.ws.root, home, stat: opts.stat || stat };
@@ -266,8 +313,7 @@ export function handle(input, opts = {}) {
   const key = `${tool}:${hit.pattern}`;
   if (state.denied.includes(key)) return null; // the same search again after a deny: let it run
   const server = w.server || findServer(w.ws.root);
-  if (!server) return null;
-  writeState(file, { ...state, denies: state.denies + 1, denied: [...state.denied, key] });
+  if (!server || !claimDeny(dir, id, key)) return null;
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

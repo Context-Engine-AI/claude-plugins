@@ -8,7 +8,7 @@ export const SEARCH_HINT = /(?:^|[^\w.-])(?:rg|grep|egrep|fgrep|ugrep|ag|ack)(?:
 
 const TOOLS = { rg: "rg", grep: "grep", egrep: "grep", fgrep: "grep", ugrep: "ugrep", ag: "ag", ack: "ag", git: "git" };
 // Short flags that take a value, per tool (rg -r is --replace; grep -r is recursive).
-const SHORT_VALUE = { rg: "efgtTABCmMjdrE", grep: "efABCmdD", ugrep: "efABCmdDgtOM", ag: "ABCmGg", "git-grep": "efABCm" };
+const SHORT_VALUE = { rg: "efgtTABCmMjdrE", grep: "efABCmdD", ugrep: "efABCmdDgtOMNKJ", ag: "ABCmGg", "git-grep": "efABCm" };
 const LONG_VALUE = new Set([
   "regexp", "file", "glob", "iglob", "type", "type-not", "type-add", "type-clear", "after-context",
   "before-context", "context", "max-count", "max-columns", "threads", "max-depth", "maxdepth", "replace",
@@ -33,6 +33,7 @@ const KEYWORDS = new Set(("fn def class struct enum trait impl interface type fu
   "while loop match case switch try catch except finally raise throw throws yield lambda and or not in is as with " +
   "where unsafe mut ref dyn go defer chan select").split(" "));
 const DEF_KEYWORDS = new Set("fn def class struct enum trait interface type func function module mod".split(" "));
+const CONSUMERS = new Set(["wc", "xargs", "while", "sed", "perl", "awk", "parallel", "uniq"]);
 const IMPORT_KEYWORDS = new Set(["import", "from", "use", "require", "include", "using"]);
 const MARKER = /^(TODO|FIXME|XXX|HACK|NOCOMMIT)\b/i;
 
@@ -151,7 +152,7 @@ export function parseGrep(words) {
     tool, gitC, patterns: [], includes: [], prePaths: [], postPaths: [],
     fixed: head === "fgrep", recursive: tool !== "grep", noPattern: false,
     bre: head === "grep" || tool === "git-grep", // basic regex by default: \| alternates, ( is literal
-    count: false, invert: false, filesWithout: false, quiet: false,
+    count: false, invert: false, filesWithout: false, quiet: false, unindexed: false,
   };
   let endOpts = false;
   const positional = [];
@@ -208,6 +209,7 @@ function applyShort(g, c, val) {
   else if (c === "L") g.filesWithout = true;
   else if (c === "q") g.quiet = true;
   else if (c === "F") g.fixed = true;
+  else if ((c === "u" || c === ".") && g.tool === "rg") g.unindexed = true; // ignored or hidden files
   else if ((c === "E" || c === "P") && (g.tool === "grep" || g.tool === "git-grep")) g.bre = false;
   else if (c === "G" && (g.tool === "grep" || g.tool === "git-grep")) g.bre = true;
   else if ((c === "r" || c === "R") && g.tool === "grep") g.recursive = true;
@@ -224,6 +226,7 @@ function applyLong(g, name, val) {
   else if (name === "files-without-match") g.filesWithout = true;
   else if (name === "quiet" || name === "silent") g.quiet = true;
   else if (name === "fixed-strings") g.fixed = true;
+  else if (name.startsWith("no-ignore") || name === "hidden" || name === "unrestricted") g.unindexed = true;
   else if (name === "extended-regexp" || name === "perl-regexp") g.bre = false;
   else if (name === "basic-regexp") g.bre = true;
   else if (name === "recursive" || name === "dereference-recursive") g.recursive = true;
@@ -261,10 +264,10 @@ function inIndex(abs, root) {
 // Named files only, paths outside the root, unindexed dirs and unresolvable paths are not repo-wide.
 export function repoWide(paths, base, ctx) {
   return paths.some((p) => {
-    if (/[$`]/.test(p)) return false;
+    if (/[$`]/.test(p) || p.startsWith(":")) return false; // unresolvable, or a git pathspec like ':!vendor'
     const expanded = p === "~" ? ctx.home : p.startsWith("~/") ? path.join(ctx.home, p.slice(2)) : p;
     const globAt = expanded.search(/[*?[{]/);
-    if (globAt >= 0) {
+    if (globAt >= 0 && /[*?]/.test(expanded)) {
       if (globExts(expanded).some((e) => NON_CODE_EXT.has(e))) return false;
       return inIndex(path.resolve(base, expanded.slice(0, globAt) || "."), ctx.root);
     }
@@ -391,7 +394,7 @@ function isRev(p, base, ctx) {
 }
 
 function judgeGrep(g, base, ctx, history) {
-  if (g.noPattern || g.count || g.invert || g.filesWithout || g.quiet) return null;
+  if (g.noPattern || g.count || g.invert || g.filesWithout || g.quiet || g.unindexed) return null;
   const paths = [...g.prePaths, ...g.postPaths];
   if (g.tool === "grep" && !g.recursive && !paths.length) return null; // reads stdin
   if (g.tool === "git-grep" && (history || g.prePaths.some((p) => isRev(p, base, ctx)))) return null;
@@ -424,14 +427,15 @@ export function classifyBash(command, ctx) {
   for (const st of cmds) {
     const words = stripRedirects(st[0]);
     if (!words.length) continue;
-    if (words[0].w === "cd") {
+    if (words[0].w === "cd" || words[0].w === "pushd") {
       const d = words[1] ? words[1].w : "~";
       base = base === null || /[$`]/.test(d) || d === "-" ? null : path.resolve(base, d === "~" ? ctx.home : d.replace(/^~\//, `${ctx.home}/`));
       continue;
     }
     if (base === null) continue;
-    // Only the first stage can be a discovery grep: a grep after a pipe filters output, and "| wc" counts.
-    if (st.slice(1).some((s) => stripRedirects(s)[0] && stripRedirects(s)[0].w === "wc")) continue;
+    // Only the first stage can be a discovery grep: a grep after a pipe filters output. "| wc" counts,
+    // and "| xargs sed -i", "| while read" act on the matches (a rename, a batch edit).
+    if (st.slice(1).some((s) => stripRedirects(s)[0] && CONSUMERS.has(stripRedirects(s)[0].w))) continue;
     const g = parseGrep(words);
     if (!g) continue;
     const hit = judgeGrep(g, g.gitC ? path.resolve(base, g.gitC) : base, ctx, history);
@@ -456,6 +460,8 @@ export function classifyGlobTool(input, ctx) {
   if (!repoWide([typeof input.path === "string" && input.path ? input.path : "."], ctx.cwd, ctx)) return null;
   const m = /^\*+([^*?[\]{}/.]+)\*+(?:\.([A-Za-z0-9]+))?$/.exec(pattern.split("/").pop());
   if (!m || (m[2] && NON_CODE_EXT.has(m[2].toLowerCase()))) return null;
+  // Only a multi-part identifier (AuthService, user_service); *README*, *Dockerfile*, *test* are file lookups.
+  if (!/[a-z0-9][A-Z]|[A-Za-z0-9]_[A-Za-z0-9]/.test(m[1])) return null;
   const hit = classifyWord(m[1]);
   return hit && { kind: "term", text: hit.text, pattern };
 }

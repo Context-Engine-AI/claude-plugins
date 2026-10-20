@@ -24,7 +24,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__context-engine__.*",
+        "matcher": "^(mcp__context-engine__.*|Edit|Write|MultiEdit|NotebookEdit)$",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-hook.mjs\"", "timeout": 3 }
         ]

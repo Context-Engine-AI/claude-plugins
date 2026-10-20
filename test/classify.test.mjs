@@ -39,6 +39,8 @@ const BASH = [
   ['grep -rn "parseConfig\\|loadConfig" src', ["symbol", "parseConfig|loadConfig"]],
   ['rg "func (Find|Extract)Name\\("', ["symbol", "FindName|ExtractName"]],
   ['grep -rnE "load_(config|settings)" .', ["symbol", "load_config|load_settings"]],
+  ["pushd src && rg HttpClient", ["symbol", "HttpClient"]],
+  ["ugrep -N skipme -r parseConfig src", ["symbol", "parseConfig"]],
   // everything else -> allow
   ['rg -c "parseConfig" src/', "allow"],
   ["rg parseConfig | wc -l", "allow"],
@@ -77,6 +79,13 @@ const BASH = [
   ['echo "use rg parseConfig to search"', "allow"],
   ['grep -rn "foo(bar)" src', "allow"],
   ['rg "(load|save(Config|State))"', "allow"],
+  // review findings: renames and batch edits, named files via braces, ignored files, git exclusions
+  ["rg -l oldName | xargs sed -i '' 's/oldName/newName/g'", "allow"],
+  ["grep -rl parseConfig src | while read f; do echo $f; done", "allow"],
+  ["rg parseConfig src/{config,app}.ts", "allow"],
+  ["rg --no-ignore parseConfig", "allow"],
+  ["rg -uu parseConfig", "allow"],
+  ["git grep \"rate limit\" -- '*.md' ':!node_modules'", "allow"],
 ];
 
 for (const [cmd, want] of BASH) {
@@ -107,6 +116,10 @@ test("Glob tool", () => {
   assert.equal(classifyGlobTool({ pattern: "**/*.ts" }, ctx), null);
   assert.equal(classifyGlobTool({ pattern: "**/package.json" }, ctx), null);
   assert.equal(classifyGlobTool({ pattern: "**/*config*.json" }, ctx), null);
+  for (const pattern of ["**/*README*", "*Dockerfile*", "**/*test*", "*tsconfig*", "*docker-compose*", "**/*retry*"]) {
+    assert.equal(classifyGlobTool({ pattern }, ctx), null, pattern);
+  }
+  assert.equal(classifyGlobTool({ pattern: "src/**/*user_service*.py" }, ctx).text, "user_service");
 });
 
 test("classifies a search in well under 50 ms", () => {
