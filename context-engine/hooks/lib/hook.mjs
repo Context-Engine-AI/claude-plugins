@@ -203,10 +203,12 @@ export function sessionKey(sessionId) {
   return String(sessionId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 128) || null;
 }
 
-export function stateDir(dir) {
+// The state directory, created only when `create` is set; null when it doesn't exist yet.
+export function stateDir(dir, create) {
   const uid = typeof process.getuid === "function" ? process.getuid() : null;
   const d = dir || path.join(os.tmpdir(), `ctxce-claude-hooks-${uid ?? "user"}`);
-  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  if (create) fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  else if (!fs.existsSync(d)) return null;
   const st = fs.lstatSync(d);
   if (!st.isDirectory() || (uid !== null && st.uid !== uid)) throw new Error(`${d} is not this user's directory`);
   return d;
@@ -222,6 +224,7 @@ function create(file, content) {
 }
 
 export function readState(dir, id) {
+  if (!dir) return { denied: [], done: false };
   const denied = [];
   for (let i = 0; i < MAX_DENIES; i += 1) {
     try {
@@ -293,16 +296,19 @@ export function handle(input, opts = {}) {
   // edits files, greps check the edit and the index may lag behind it. Either way: stop denying.
   // shortcut: matches the standard "context-engine" server name only, like the hooks.json matcher.
   if (event === "PostToolUse") {
-    const ends = typeof tool === "string" && (tool.startsWith("mcp__context-engine__") || EDIT_TOOLS.has(tool));
-    if (id && ends) create(path.join(stateDir(opts.stateDir), `${id}.done`), "1");
+    const ce = typeof tool === "string" && tool.startsWith("mcp__context-engine__");
+    if (!id || (!ce && !EDIT_TOOLS.has(tool))) return null;
+    // shortcut: an edit is recorded only where state already exists, so non-CE users get no files;
+    // the first CE session on a machine can still see one deny after an edit.
+    const dir = stateDir(opts.stateDir, ce);
+    if (dir) create(path.join(dir, `${id}.done`), "1");
     return null;
   }
   if (event !== "PreToolUse") return null;
   const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
   if (tool === "Bash" ? !SEARCH_HINT.test(String(toolInput.command || "")) : tool !== "Grep" && tool !== "Glob") return null;
   if (!id) return null;
-  const dir = stateDir(opts.stateDir);
-  const state = readState(dir, id);
+  const state = readState(stateDir(opts.stateDir, false), id);
   if (state.done || state.denied.length >= MAX_DENIES) return null;
   const w = workspace();
   if (!w) return null;
@@ -313,7 +319,7 @@ export function handle(input, opts = {}) {
   const key = `${tool}:${hit.pattern}`;
   if (state.denied.includes(key)) return null; // the same search again after a deny: let it run
   const server = w.server || findServer(w.ws.root);
-  if (!server || !claimDeny(dir, id, key)) return null;
+  if (!server || !claimDeny(stateDir(opts.stateDir, true), id, key)) return null;
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",

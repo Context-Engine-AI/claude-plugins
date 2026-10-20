@@ -147,9 +147,15 @@ test("review: .mcp.json servers count only once approved", (t) => {
   assert.ok(handle(bash(repo, "rg parseConfig"), opts));
 });
 
-test("review: an edit ends redirects for the session", (t) => {
+test("review: an edit ends redirects for the session, and non-CE sessions leave no state", (t) => {
   const { repo, opts } = fixture(t);
-  handle({ hook_event_name: "PostToolUse", session_id: "e1", cwd: repo, tool_name: "Edit", tool_input: {} }, opts);
+  const edit = { hook_event_name: "PostToolUse", session_id: "e1", cwd: repo, tool_name: "Edit", tool_input: {} };
+  handle(edit, opts);
+  assert.equal(fs.existsSync(opts.stateDir), false, "no state dir before any CE activity");
+  handle(bash(repo, "npm test", "e1"), opts);
+  assert.equal(fs.existsSync(opts.stateDir), false);
+  assert.ok(handle(bash(repo, "rg firstName", "e0"), opts), "a deny creates the state dir");
+  handle(edit, opts);
   assert.equal(handle(bash(repo, "rg oldName", "e1"), opts), null);
 });
 
