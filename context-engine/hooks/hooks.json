@@ -29,6 +29,27 @@
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ce-hook.mjs\"", "timeout": 3 }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/wiki-hook.mjs\"", "timeout": 3 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/wiki-hook.mjs\"", "timeout": 3 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/wiki-hook.mjs\"", "timeout": 10 }
+        ]
+      }
     ]
   }
 }
