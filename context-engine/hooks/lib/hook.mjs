@@ -191,7 +191,7 @@ export function findCeServer(root, cwd, home, env, parentArgs) {
   const servers = found.filter(([n]) => !disabled.has(n));
   const hit = servers.find(([n]) => n === "context-engine") || servers.find(([n, c]) => looksLikeCe(n, c));
   if (!hit) return null;
-  return { name: hit[0], prefix: `mcp__${hit[0].replace(/[^A-Za-z0-9_-]/g, "_")}__`, collection: explicitCollection(hit[1]), config: hit[1] };
+  return { name: hit[0], prefix: `mcp__${hit[0].replace(/[^A-Za-z0-9_-]/g, "_")}__`, collection: explicitCollection(hit[1]) };
 }
 
 // ---------------------------------------------------------------- throttle state
