@@ -1,7 +1,7 @@
 {
   "name": "context-engine",
   "displayName": "Context Engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Points Claude Code and its subagents at Context Engine's indexed code search (repo_search, symbol_graph) instead of repo-wide grep, when the workspace is indexed and the CE MCP server is configured.",
   "author": { "name": "Context Engine", "url": "https://github.com/Context-Engine-AI" },
   "homepage": "https://github.com/Context-Engine-AI/claude-plugins",

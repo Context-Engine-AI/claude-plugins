@@ -245,24 +245,18 @@ function claimDeny(dir, id, key) {
 
 export function sessionContext(collection, server) {
   const p = server.prefix;
-  return `Context Engine has this workspace indexed as collection ${collection}. ` +
-    `${p}repo_search {"query": "..."} returns the matching code as verified source with exact line ranges and callers in one call. ` +
-    `${p}symbol_graph {"symbol": "X", "query_type": "definition"} returns where X is defined; "callers", "callees" and "importers" walk the graph. ` +
-    `A grep returns matching lines only and usually needs several Reads after it. ` +
-    "Grep fits an exact string in a known file, counts, and files outside the index.";
+  return `This workspace is indexed by Context Engine (collection ${collection}): for any question about the codebase, call ${p}repo_search FIRST, before ls/find/Grep/Read, and again whenever you move to a new area; for how/why questions that span several files use ${p}context_answer. Results are verified source with exact line ranges: treat them as already read. Use Grep only to confirm an exact literal in a file you already know, or to count.`;
 }
 
 export function denyReason(hit, collection, server) {
   const p = server.prefix;
-  const head = `Not run. Context Engine has this workspace indexed (collection ${collection}). `;
+  const head = `Not run. This workspace is indexed (collection ${collection}). `;
   const repoSearch = `${p}repo_search ${JSON.stringify({ query: hit.text, collection })}`;
   if (hit.kind === "symbol") {
     const symbolGraph = `${p}symbol_graph ${JSON.stringify({ symbol: hit.text, query_type: "definition", collection })}`;
-    return `${head}${symbolGraph} returns where ${hit.text} is defined with exact lines in one call ` +
-      `(query_type "callers" lists its callers); ${repoSearch} returns the code that uses it as verified source.`;
+    return `${head}${symbolGraph} returns where ${hit.text} is defined with exact lines in one call (query_type "callers" lists its callers); ${repoSearch} returns the code as verified source with exact line ranges: treat it as already read. Use Grep only to confirm an exact literal in a file you already know.`;
   }
-  return `${head}${repoSearch} returns the matching code as verified source with exact line ranges and callers ` +
-    "in one call; a grep returns matching lines only and usually needs several Reads after it.";
+  return `${head}${repoSearch} returns the matching code as verified source with exact line ranges: treat it as already read. Use Grep only to confirm an exact literal in a file you already know, or to count.`;
 }
 
 // ---------------------------------------------------------------- entry
